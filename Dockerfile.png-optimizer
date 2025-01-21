@@ -1,9 +1,7 @@
 FROM alpine
 
-COPY png-optimizer.sh /opt/scripts/png-optimizer.sh
-
 WORKDIR /pixel/report
 
-RUN apk add --no-cache inotify-tools optipng exiftool bash parallel
+RUN apk add --no-cache oxipng
 
-CMD ["/bin/bash", "/opt/scripts/png-optimizer.sh", "/pixel/report"]
+CMD ["oxipng", "--fix", "--recursive", "-o", "2", "."]

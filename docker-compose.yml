@@ -133,7 +133,6 @@ services:
       dockerfile: Dockerfile.png-optimizer
     volumes:
       - ./report:/pixel/report
-      - ./png-optimizer.sh:/opt/scripts/png-optimizer.sh
     working_dir: /pixel/report
     networks:
       - pixel_network
