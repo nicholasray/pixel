@@ -54,6 +54,34 @@ async function getLatestCodexVersion() {
 }
 
 /**
+ * @param {string} mwBranch
+ * @return {Promise<string>}
+ */
+async function getCodexVersionForMWBranch( mwBranch ) {
+	// Get the version referenced in the MW branch's 'foreign-resources.yaml'
+	// First remove the remote prefix from the branch, if present
+	// So "origin/wmf/1.43.0-wmf.5" becomes "wmf/1.43.0-wmf.5"
+	mwBranch = ( mwBranch.match( /\//g ) || [] ).length > 1 ?
+		mwBranch.slice( mwBranch.indexOf( '/' ) + 1 ) :
+		mwBranch;
+	try {
+		const { stdout } = await exec( `
+curl -sf --compressed --retry 5 --retry-delay 5 --retry-max-time 120 'https://gerrit.wikimedia.org/r/plugins/gitiles/mediawiki/core/+/refs/heads/${mwBranch}/resources/lib/foreign-resources.yaml?format=TEXT' | \
+docker run --rm -i mikefarah/yq eval '@base64d | from_yaml | .codex.version' - 
+    ` );
+		if ( stdout.trim() === '' ) {
+			throw new Error( 'Codex version string is unexpectedly blank' );
+		}
+		return `v${stdout.trim()}`;
+	} catch ( error ) {
+		error.message = "Error getting Codex version for MW branch '" + mwBranch + "'\n" +
+		error.message +
+		"Either 'foreign-resources.yaml' doesn't exist at the curled url, couldn't be retrieved, or the yaml key '.codex.version' is not present in that version of the yaml\n";
+		throw error;
+	}
+}
+
+/**
  * @param {string} indexFileFullPath Full path to the index file.
  * @param {string} bannerContent The banner content to prepend.
  */
@@ -135,6 +163,23 @@ function removeFolder( relativePath ) {
 	fs.rmSync( `${__dirname}/${relativePath}`, { recursive: true, force: true } );
 }
 
+async function updateCodexRepoBranchIfNecessary( opts, mwBranch ) {
+	// Return if the user has already specified a '--repo-branch' for Codex
+	if ( opts.repoBranch?.some( ( branch ) => branch.startsWith( 'design/codex:' ) ) ) {
+		return;
+	}
+	// Determine which Codex version the MW branch wants and use it,
+	// fallback on latest version
+	let codexVersion;
+	try {
+		codexVersion = await getCodexVersionForMWBranch( mwBranch );
+	} catch ( error ) {
+		codexVersion = await getLatestCodexVersion();
+		console.log( `\x1b[33m${error.message}Falling back to latest Codex version ${codexVersion}\x1b[0m` );
+	}
+	opts.repoBranch = [ ...( opts.repoBranch ?? [] ), `design/codex:${codexVersion}` ];
+}
+
 /**
  * @typedef {Object} CommandOptions
  * @property {string[]} [changeId]
@@ -156,9 +201,12 @@ async function processCommand( type, opts, runSilently = false ) {
 
 		setEnvironmentFlagIfGroup( 'ENABLE_WIKILAMBDA', 'wikilambda', group );
 
-		const activeBranch = await getActiveBranch( opts );
+		const activeMWBranch = await getActiveBranch( opts );
+
+		await updateCodexRepoBranchIfNecessary( opts, activeMWBranch );
+
 		const description = getDescription( opts );
-		updateContext( group, type, activeBranch, description );
+		updateContext( group, type, activeMWBranch, description );
 
 		await prepareDockerEnvironment( opts );
 		const { stdout: stdout1 } = await simpleSpawn.exec( './purgeParserCache.sh' );
@@ -186,20 +234,13 @@ async function processCommand( type, opts, runSilently = false ) {
 
 async function getActiveBranch( opts ) {
 	if ( opts.branch === LATEST_RELEASE_BRANCH ) {
-		return await getLatestReleaseBranchAndUpdateOpts( opts );
+		opts.branch = await getLatestReleaseBranch();
+		return opts.branch;
 	} else if ( opts.branch !== 'master' ) {
 		return opts.branch;
 	} else {
 		return opts.changeId ? opts.changeId[ 0 ] : opts.branch;
 	}
-}
-
-async function getLatestReleaseBranchAndUpdateOpts( opts ) {
-	opts.branch = await getLatestReleaseBranch();
-	const codexTag = await getLatestCodexVersion();
-	opts.repoBranch = [ ...( opts.repoBranch ?? [] ), `design/codex:${codexTag}` ];
-	console.log( `Using latest branch "${opts.branch}" (for Codex, "${codexTag}")` );
-	return opts.branch;
 }
 
 function getDescription( opts ) {
